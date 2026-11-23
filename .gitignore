@@ -1,0 +1,8 @@
+node_modules/
+npm-debug.log*
+.DS_Store
+
+# rendered clips & uploaded sources live in the OS tmpdir, never in the repo
+*.mp4
+*.webm
+.env
