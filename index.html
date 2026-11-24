@@ -527,7 +527,7 @@ footer{border-top:1px solid var(--line);padding:22px 28px;display:flex;justify-c
 </section>
 
 <footer>
-  <span>ClipForge Pro — clip smarter, post everywhere. <b id="buildStamp" style="color:#7c5cff">build …</b></span>
+  <span>ClipForge Pro — clip smarter, post everywhere. <b id="buildStamp" style="color:#7c5cff;cursor:pointer" title="Click to check your encoder" onclick="selfTest&&openExport&&openExport()">build …</b></span>
   <span>Keyboard: <span class="kbd">Space</span> <span class="kbd">I</span> <span class="kbd">O</span> <span class="kbd">L</span></span>
 </footer>
 
@@ -3462,7 +3462,7 @@ async function diagnoseShort(){
   }
   return bits.join(' · ');
 }
-const BUILD='2026-11-24-MP4';
+const BUILD='v6-selftest';
 window.clipforgeCheck=async function(){
  const enc={};
  enc.h264=await (async()=>{try{return (await VideoEncoder.isConfigSupported({codec:'avc1.640028',width:1080,height:1920,bitrate:8e6,framerate:30})).supported}catch(e){return false}})();
