@@ -49,8 +49,9 @@ the result screen:
 | Tier | Where | What you get |
 | ---- | ----- | ------------ |
 | **Server render** | anywhere with `ffmpeg` (+ `yt-dlp` for YouTube) | full 1080p MP4 of the real video, original audio + music mixed, captions burned in |
-| **Browser MP4** | Chrome / Edge, no server needed | real 1080p MP4 (H.264 + AAC, or Opus when the browser has no AAC) via WebCodecs + mp4-muxer. The muxer is **inlined into index.html**, so no static-file route or MIME setting can break it. Uploaded files get real video frames; YouTube sources export a Ken-Burns *still + music* MP4 because a cross-origin YouTube iframe can never be painted to a canvas |
-| **Browser WebM** | Safari / Firefox | canvas capture of uploaded video with mixed audio (`.webm`) |
+| **Browser MP4** | Chrome / Edge, no server needed | real 1080p MP4 (H.264 + AAC, or Opus when the browser has no AAC) via WebCodecs + mp4-muxer. The muxer is **inlined into index.html**, so no static-file route or MIME setting can break it. Works on uploaded/demo video files |
+| **Tab capture → MP4** | Chrome / Edge, any source incl. YouTube | records the footage you play in a captured tab/window and encodes real 1080p MP4 with your music + captions. This is the answer for YouTube, which browsers cannot read directly |
+| **Browser WebM** | Safari / Firefox | canvas capture of **uploaded** video with mixed audio (`.webm`) — never a still |
 | **Project file** | no encoder at all | a `.json` that re-opens the clip in the editor — the button says so, it is never labelled MP4 |
 
 The navbar pill shows the active engine: `engine online`, `upload render`,
@@ -65,6 +66,11 @@ Codec negotiation order (first supported wins):
 - video: H.264 → VP9 → VP8 (VP9/VP8 are still muxed into a real `.mp4`)
 - audio: AAC → Opus → silent
 
+> **YouTube sources** deliberately do **not** export a still image. Browsers cannot
+> read a cross-origin YouTube iframe, so instead the app points you at
+> **Record a tab / window**: open the video in another tab, record the moment, and
+> get a real MP4 with your music and burned-in captions.
+>
 > **Vercel:** this is a pure static deploy — `index.html` (with the muxer inlined),
 > `music/`, `assets/`. No `vercel.json` is needed or wanted: declaring `builds`
 > there disables Vercel's static file serving and breaks things. Exports use the

@@ -321,6 +321,16 @@ footer{border-top:1px solid var(--line);padding:22px 28px;display:flex;justify-c
       </div>
 
       <div id="tab-youtube">
+        <div class="panel" style="margin:0 0 14px;padding:0;background:rgba(251,191,36,.07);border:1px solid rgba(251,191,36,.35)">
+          <div style="padding:12px 13px">
+            <b style="font-size:13px;display:block;margin-bottom:4px">🎥 Get real YouTube footage</b>
+            <p class="hint" style="margin:0 0 9px">Browsers can't read a YouTube iframe. Open the video in another tab, hit Record, play the part you want, then Stop — you get a real MP4 with music and captions.</p>
+            <button class="btn btn-grad btn-sm" style="width:100%;justify-content:center" id="tabRecBtn" onclick="startTabCapture()">
+              Record a tab / window
+            </button>
+            <div id="tabRecStatus" class="hint" style="margin:7px 0 0;display:none"></div>
+          </div>
+        </div>
         <div class="field">
           <label>YouTube URL</label>
           <div class="url-row">
@@ -3012,6 +3022,141 @@ const MP4 = (() => {
     await ae.flush(); ae.close();
   }
 
+  /**
+   * mode A: file (uploaded/demo) — offline, frame-accurate, fast
+   * mode B: live capture — a MediaStream (tab/screen capture) recorded in realtime
+   */
+  async function renderLive(opts){
+    const {stream, duration, aspect, captionText, captionsOn, musicUrl, musicVol, fade, onProgress} = opts;
+    if(!hasCodecs()) throw new Error('Browser MP4 encoder unavailable');
+    const W = aspect==='9x16'?1080:aspect==='1x1'?1080:1920;
+    const H = aspect==='9x16'?1920:aspect==='1x1'?1080:1080;
+    const FPS = 30;
+    const cfg = await pickConfig(W,H,FPS);
+    const acfg = await pickAudioConfig();
+
+    const lib=muxerLib();
+    const muxer=new lib.Muxer({
+      target:new lib.ArrayBufferTarget(),
+      video:{codec:cfg.muxer==='vp9'?'vp9':'avc',width:W,height:H},
+      ...(acfg?{audio:{codec:acfg.muxer,sampleRate:acfg.sampleRate,numberOfChannels:acfg.numberOfChannels}}:{}),
+      fastStart:'in-memory'
+    });
+
+    const ve=new VideoEncoder({output:(c,m)=>muxer.addVideoChunk(c,m),error:e=>{throw e}});
+    ve.configure(cfg);
+
+    // audio: capture-stream audio (+ optional music) -> encode live
+    let ae=null, musicEl=null;
+    if(acfg){
+      ae=new AudioEncoder({output:(c,m)=>muxer.addAudioChunk(c,m),error:e=>{throw e}});
+      ae.configure({codec:acfg.codec,sampleRate:acfg.sampleRate,
+        numberOfChannels:acfg.numberOfChannels,bitrate:acfg.bitrate});
+    }
+
+    const canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;
+    const ctx=canvas.getContext('2d',{alpha:false});
+    const vid=document.createElement('video');
+    vid.srcObject=stream; vid.muted=true; vid.playsInline=true;
+    await vid.play().catch(()=>{});
+
+    // realtime audio graph from the captured stream
+    const ac=new AudioContext({sampleRate:acfg?acfg.sampleRate:48000});
+    const dest=ac.createMediaStreamDestination();
+    let procNode=null;
+    try{
+      const src=ac.createMediaStreamSource(stream);
+      src.connect(dest);
+    }catch(e){ console.warn('no capture audio',e); }
+    if(musicUrl){
+      try{
+        musicEl=new Audio();
+        musicEl.src=musicUrl; musicEl.crossOrigin='anonymous'; musicEl.loop=true;
+        musicEl.volume=clamp(musicVol,0,1);
+        const msrc=ac.createMediaElementSource(musicEl);
+        const g=ac.createGain(); g.gain.value=clamp(musicVol,0,2);
+        msrc.connect(g); g.connect(dest);
+        await musicEl.play().catch(()=>{});
+      }catch(e){ console.warn('music into capture failed',e); }
+    }
+
+    // pull PCM from the destination with a processor-free ScriptProcessor fallback
+    const bufferSize=4096;
+    const sp=ac.createScriptProcessor? ac.createScriptProcessor(bufferSize,1,1):null;
+    let audioTs=0;
+    if(sp && ae){
+      sp.onaudioprocess=(ev)=>{
+        if(!ae) return;
+        const inp=ev.inputBuffer.getChannelData(0);
+        if(!inp || !inp.length) return;
+        const copy=new Float32Array(inp);
+        const ad=new AudioData({format:'f32-planar',sampleRate:acfg.sampleRate,
+          numberOfChannels:1,numberOfFrames:copy.length,
+          timestamp:Math.round(audioTs/acfg.sampleRate*1e6),data:copy});
+        audioTs+=copy.length;
+        try{ae.encode(ad)}catch(e){}
+        ad.close();
+      };
+      sp.connect(ac.destination);   // gives the processor a sink so it runs
+    }
+
+    const font=Math.round(W/22);
+    const drawCaption=()=>{
+      if(!(captionsOn && captionText)) return;
+      ctx.font=`800 ${font}px Inter, system-ui, sans-serif`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      const pad=Math.round(font*0.55), maxW=W-pad*4;
+      const words=captionText.split(/\s+/); const lines=[]; let line='';
+      for(const w of words){const test=line?line+' '+w:w;
+        if(ctx.measureText(test).width>maxW&&line){lines.push(line);line=w}else line=test;}
+      if(line)lines.push(line);
+      const lh=font*1.25, boxH=lh*lines.length+pad*2;
+      let boxW=0;lines.forEach(l=>boxW=Math.max(boxW,ctx.measureText(l).width));
+      boxW=Math.min(W-pad*2,boxW+pad*2);
+      const bx=(W-boxW)/2,by=H-Math.round(H*0.12)-boxH;
+      ctx.fillStyle='rgba(0,0,0,0.58)';ctx.fillRect(bx,by,boxW,boxH);
+      ctx.fillStyle='#fff';
+      lines.forEach((l,i)=>ctx.fillText(l,W/2,by+pad+lh*(i+0.5)));
+    };
+
+    const t0=performance.now();
+    let idx=0;
+    const totalFrames=Math.max(2,Math.round(duration*FPS));
+    const raf=window.requestAnimationFrame||((f)=>setTimeout(f,16));
+    await new Promise(resolve=>{
+      const step=()=>{
+        const elapsed=(performance.now()-t0)/1000;
+        const target=Math.min(totalFrames,Math.floor(elapsed*FPS));
+        while(idx<=target && idx<=totalFrames){
+          ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
+          const vw=vid.videoWidth||16, vh=vid.videoHeight||9;
+          const sc=Math.max(W/vw,H/vh);
+          try{ctx.drawImage(vid,(W-vw*sc)/2,(H-vh*sc)/2,vw*sc,vh*sc)}catch(e){}
+          drawCaption();
+          const f=new VideoFrame(canvas,{timestamp:Math.round(idx*(1e6/FPS))});
+          ve.encode(f,{keyFrame:idx%(FPS*2)===0});
+          f.close(); idx++;
+        }
+        onProgress&&onProgress(clamp(elapsed/duration,0,1));
+        if(idx<totalFrames) raf(step); else resolve();
+      };
+      raf(step);
+    });
+
+    // drain audio a moment so the last samples land
+    await new Promise(r=>setTimeout(r,220));
+    if(sp){try{sp.disconnect();}catch(e){}}
+    if(musicEl){musicEl.pause();}
+    await ve.flush(); ve.close();
+    if(ae){ await ae.flush(); ae.close(); }
+    try{ac.close()}catch(e){}
+    muxer.finalize();
+    return {blob:new Blob([muxer.target.buffer],{type:'video/mp4'}),
+      width:W,height:H,stillOnly:false,ext:'mp4',
+      audio:acfg?(acfg.muxer==='opus'?'Opus':'AAC'):'silent',
+      videoCodec:cfg.label||'H.264'};
+  }
+
   async function render(opts){
     const {video, imageSrc, sourceUrl, inPoint, duration, aspect, captionText, captionsOn,
            origVol, musicUrl, musicVol, fade, onProgress} = opts;
@@ -3149,7 +3294,7 @@ const MP4 = (() => {
             videoCodec:vLabel};
   }
 
-  return {supported:hasCodecs, ready, canCapture, render, decodeAudio, mixAudio};
+  return {supported:hasCodecs, ready, canCapture, render, renderLive, decodeAudio, mixAudio};
 })();
 window.MP4=MP4;
 
@@ -3222,6 +3367,10 @@ async function runExport(){
    $("doneMeta").style.whiteSpace='pre-wrap';
    $("doneMeta").style.textAlign='left';
    if(kind==="mp4"){btn.textContent="Download MP4";$("doneTitle").textContent="Clip exported — MP4"}
+   else if(kind==="youtube"){
+     $("doneTitle").textContent="Capture the real footage";
+     btn.textContent="Start recording a tab";
+   }
    else if(kind==="error"){
      $("doneTitle").textContent="MP4 export unavailable";
      btn.textContent="Download project file";
@@ -3269,9 +3418,9 @@ async function runExport(){
  }
 
  /* ---------- 2. in-browser MP4 (Chrome/Edge, WebCodecs) ---------- */
- const youtubeStill=!!(S.videoId)&&S.hasThumb;
+ const youtubeStill=false;   // never export a still as if it were the video
  await ensureMuxer();
- if(MP4.supported()){
+ if(MP4.supported() && (S.isUpload || S.demoSource) && !youtubeStill){
    try{
      paint(0,"Preparing in-browser encoder…",12);await new Promise(r=>setTimeout(r,350));
      paint(1,"Mixing original audio + music…",35);
@@ -3301,8 +3450,13 @@ async function runExport(){
    S.lastMp4Error = 'Encoder not available: ' + (await diagnoseShort());
  }
 
- /* ---------- 3. WebM capture — a real video file beats a JSON project ---------- */
- if(window.MediaRecorder && (S.isUpload || (S.videoId && S.hasThumb))){
+/* ---------- 3b. YouTube source: capture the real footage from a tab ---------- */
+ if(S.videoId && !S.isUpload){
+   return finish(`YouTube clips can't be downloaded by the browser itself.\n\nUse "Record a tab / window" in the Source panel: open the video in another tab, press Record, play your moment, then Stop — you'll get a real MP4 with your music and captions burned in.`,"youtube");
+ }
+
+ /* ---------- 3. WebM capture — real video files only ---------- */
+ if(window.MediaRecorder && S.isUpload && (S.uploadFile || S.demoSource)){
    try{paint(0,"Capturing clip in your browser…",20);await new Promise(r=>setTimeout(r,300));
      paint(1,"Mixing audio…",45);paint(2,"Burning captions…",70);
      await recordUploadClip();paint(3,"Finalising video…",92);
@@ -3382,6 +3536,12 @@ async function recordUploadClip(){
  S.exportedBlob=new Blob(chunks,{type:"video/webm"});
 }
 function downloadClip(){
+ if($("doneTitle").textContent==="Capture the real footage"){
+   closeExport();
+   document.getElementById('studio').scrollIntoView({behavior:'smooth',block:'start'});
+   setTimeout(()=>startTabCapture(),400);
+   return;
+ }
  if(S.exportDownloadUrl){
    const a=document.createElement("a");a.href=S.exportDownloadUrl;a.download="";a.click();return;
  }
@@ -3412,6 +3572,84 @@ document.addEventListener("keydown",e=>{
  else if(e.key==="o"||e.key==="O")setOut();
  else if(e.key==="l"||e.key==="L")liveClip();
 });
+
+/* ============ TAB / SCREEN CAPTURE -> REAL MP4 ============ */
+let tabCap={rec:false,stream:null};
+async function startTabCapture(){
+  const status=(m,color)=>{const el=$("tabRecStatus");el.style.display='block';
+    el.innerHTML=m;el.style.color=color||'#fbbf24'};
+  if(tabCap.rec){
+    tabCap.rec=false;
+    $("tabRecBtn").textContent="Building MP4…";
+    await finishTabCapture();
+    return;
+  }
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getDisplayMedia){
+    return status("This browser can't record a tab. Use Chrome or Edge on desktop.",'#fb7185');
+  }
+  let stream;
+  try{
+    stream=await navigator.mediaDevices.getDisplayMedia({
+      video:{frameRate:30, width:{ideal:1920}, height:{ideal:1080}},
+      audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},
+      preferCurrentTab:false, selfBrowserSurface:"include", systemAudio:"include"
+    });
+  }catch(e){
+    return status("Screen capture was cancelled or blocked.",'#fb7185');
+  }
+  tabCap.stream=stream; tabCap.rec=true;
+  $("tabRecBtn").textContent="Stop & build MP4";
+  const dur=Math.max(2,Math.round(S.outPoint-S.inPoint));
+  status(`● Recording… play the clip in the captured tab for ${dur}s, then press Stop.`,'#a3e635');
+
+  // auto-stop if the user ends sharing from the browser bar
+  stream.getVideoTracks()[0].addEventListener('ended',()=>{
+    if(tabCap.rec) $("tabRecBtn").click();
+  });
+  return;
+}
+
+async function finishTabCapture(){
+  const status=(m,c)=>{const el=$("tabRecStatus");el.style.display='block';el.innerHTML=m;el.style.color=c||'#fbbf24'};
+  const stream=tabCap.stream;
+  if(!stream) return;
+  const dur=Math.max(2,S.outPoint-S.inPoint);
+  $("exportModal").classList.add("open");
+  $("exportMain").style.display="block";$("exportDone").style.display="none";
+  const paint=(p,m)=>{$("expFill").style.width=p+"%";$("expPct").textContent=Math.round(p)+"%";$("expStatus").textContent=m};
+  paint(5,"Recording from your captured tab…");
+  try{
+    if(!MP4.supported()) throw new Error('MP4 encoder unavailable in this browser');
+    const res=await MP4.renderLive({
+      stream, duration:dur, aspect:S.ratio,
+      captionText:($("captionInput")&&$("captionInput").value)||S.captionText,
+      captionsOn:$("swCap").classList.contains("on"),
+      musicUrl:(S.song&&S.song.url)||null, musicVol:S.musicVol,
+      fade:parseFloat($("fadeSlider").value)||1.5,
+      onProgress:p=>paint(10+p*85, p<0.85?"Encoding captured frames…":"Finishing MP4…")
+    });
+    S.exportedBlob=res.blob;S.exportDownloadUrl=null;S.demoSource=false;
+    S.title=S.title||"Tab capture";
+    $("exportMain").style.display="none";$("exportDone").style.display="block";
+    $("doneTitle").textContent="Captured — MP4";
+    $("doneMeta").style.whiteSpace='pre-wrap';$("doneMeta").style.textAlign='left';
+    $("doneMeta").textContent=`${dur.toFixed(0)}s · ${res.width}×${res.height} · ${res.videoCodec}${res.audio&&res.audio!=='silent'?" + "+res.audio:""} · ${S.song?"♪ "+S.song.title:"no music"}\n\nThis is the real footage you captured, cropped to ${S.ratio.replace("x",":")} with captions burned in.`;
+    $("downloadBtn").textContent="Download MP4";
+    toast("Tab capture exported as MP4");
+  }catch(e){
+    $("exportMain").style.display="none";$("exportDone").style.display="block";
+    $("doneTitle").textContent="Capture failed";
+    $("doneMeta").style.whiteSpace='pre-wrap';$("doneMeta").style.textAlign='left';
+    $("doneMeta").textContent=String(e&&e.message||e)+"\n\nRun clipforgeCheck() in the console for details.";
+    $("downloadBtn").textContent="Download project file";
+    toast("Capture failed — see details");
+  }finally{
+    try{stream.getTracks().forEach(t=>t.stop())}catch(e){}
+    tabCap={rec:false,stream:null};
+    $("tabRecBtn").textContent="Record a tab / window";
+    if($("tabRecStatus"))$("tabRecStatus").style.display='none';
+  }
+}
 
 /* ============ SELF TEST ============ */
 async function selfTest(){
