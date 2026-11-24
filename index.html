@@ -3294,7 +3294,7 @@ const MP4 = (() => {
             videoCodec:vLabel};
   }
 
-  return {supported:hasCodecs, ready, canCapture, render, renderLive, decodeAudio, mixAudio};
+  return {supported:hasCodecs, ready, canCapture, render, renderLive, decodeAudio, mixAudio, pickConfig, pickAudioConfig};
 })();
 window.MP4=MP4;
 
@@ -3573,81 +3573,182 @@ document.addEventListener("keydown",e=>{
  else if(e.key==="l"||e.key==="L")liveClip();
 });
 
-/* ============ TAB / SCREEN CAPTURE -> REAL MP4 ============ */
-let tabCap={rec:false,stream:null};
+/* ============ TAB / SCREEN CAPTURE -> REAL MP4 ============
+   Records CONTINUOUSLY while you play the source (that's the only way to get
+   real motion), then encodes the captured frames to H.264 MP4 with music.
+   ============================================================ */
+let tabCap={rec:false, stream:null, venc:null, chunkQueue:[], vcfg:null, startedAt:0, audio:null};
+
 async function startTabCapture(){
-  const status=(m,color)=>{const el=$("tabRecStatus");el.style.display='block';
-    el.innerHTML=m;el.style.color=color||'#fbbf24'};
-  if(tabCap.rec){
-    tabCap.rec=false;
-    $("tabRecBtn").textContent="Building MP4…";
-    await finishTabCapture();
-    return;
-  }
+  const status=(m,color)=>{const el=$("tabRecStatus");if(!el)return;
+    el.style.display='block';el.innerHTML=m;el.style.color=color||'#fbbf24'};
+
+  // ---- STOP + BUILD ----
+  if(tabCap.rec){ return stopTabCapture(); }
+
   if(!navigator.mediaDevices||!navigator.mediaDevices.getDisplayMedia){
     return status("This browser can't record a tab. Use Chrome or Edge on desktop.",'#fb7185');
   }
+  if(!MP4.supported()){ return status("This browser can't encode MP4 (WebCodecs missing). Use Chrome/Edge.",'#fb7185'); }
+
   let stream;
   try{
     stream=await navigator.mediaDevices.getDisplayMedia({
       video:{frameRate:30, width:{ideal:1920}, height:{ideal:1080}},
       audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false},
-      preferCurrentTab:false, selfBrowserSurface:"include", systemAudio:"include"
+      selfBrowserSurface:"include", systemAudio:"include", surfaceSwitching:"include"
     });
   }catch(e){
     return status("Screen capture was cancelled or blocked.",'#fb7185');
   }
-  tabCap.stream=stream; tabCap.rec=true;
-  $("tabRecBtn").textContent="Stop & build MP4";
-  const dur=Math.max(2,Math.round(S.outPoint-S.inPoint));
-  status(`● Recording… play the clip in the captured tab for ${dur}s, then press Stop.`,'#a3e635');
 
-  // auto-stop if the user ends sharing from the browser bar
-  stream.getVideoTracks()[0].addEventListener('ended',()=>{
-    if(tabCap.rec) $("tabRecBtn").click();
+  const W=S.ratio==="9x16"?1080:S.ratio==="1x1"?1080:1920;
+  const H=S.ratio==="9x16"?1920:S.ratio==="1x1"?1080:1080;
+  const FPS=30;
+  const cfg=await MP4.pickConfig(W,H,FPS);
+
+  // encoder lives for the whole session -> real continuous capture
+  const chunks=[];
+  const venc=new VideoEncoder({
+    output:(c,m)=>{chunks.push({chunk:c,meta:m})},
+    error:(e)=>{status("Encoder error: "+e.message,'#fb7185')}
   });
-  return;
+  venc.configure(cfg);
+
+  const vid=document.createElement('video');
+  vid.srcObject=stream; vid.muted=true; vid.playsInline=true;
+  await vid.play().catch(()=>{});
+
+  const canvas=document.createElement('canvas'); canvas.width=W; canvas.height=H;
+  const ctx=canvas.getContext('2d',{alpha:false});
+  const caption=((($("captionInput")&&$("captionInput").value)||S.captionText||"")+"").trim();
+  const showCap=$("swCap").classList.contains("on") && !!caption;
+  const font=Math.round(W/22);
+
+  tabCap={rec:true, stream, venc, chunkQueue:chunks, vcfg:cfg, startedAt:performance.now(),
+          audio:{W,H,ctx,vid,canvas,caption,showCap,font}};
+
+  // draw + encode, but only as many frames as wall-clock time demands.
+  // (rAF fires ~60/s; encoding one frame per rAF with 30fps timestamps would
+  //  stretch the clip to 2x. Gate on elapsed time instead.)
+  let idx=0;
+  const t0=performance.now();
+  const tick=()=>{
+    if(!tabCap.rec) return;
+    const elapsed=(performance.now()-t0)/1000;
+    const target=Math.floor(elapsed*FPS);
+    ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+    const vw=vid.videoWidth||16, vh=vid.videoHeight||9;
+    const sc=Math.max(W/vw,H/vh);
+    try{ ctx.drawImage(vid,(W-vw*sc)/2,(H-vh*sc)/2,vw*sc,vh*sc); }catch(e){}
+    if(showCap){
+      ctx.font=`800 ${font}px Inter, system-ui, sans-serif`;
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      const pad=Math.round(font*0.55);
+      const boxW=Math.min(W-pad*2, ctx.measureText(caption).width+pad*2);
+      const boxH=font+pad*2;
+      ctx.fillStyle='rgba(0,0,0,0.58)';
+      ctx.fillRect((W-boxW)/2, H-Math.round(H*0.12)-boxH, boxW, boxH);
+      ctx.fillStyle='#fff'; ctx.fillText(caption, W/2, H-Math.round(H*0.12)-boxH/2);
+    }
+    while(idx<=target){
+      try{
+        const f=new VideoFrame(canvas,{timestamp:Math.round(idx*(1e6/FPS))});
+        venc.encode(f,{keyFrame: idx%(FPS*2)===0});
+        f.close();
+      }catch(e){}
+      idx++;
+    }
+    (window.requestAnimationFrame||((fn)=>setTimeout(fn,33)))(tick);
+  };
+  tick();
+
+  // music plays out loud + is captured by system audio if the user shares a tab
+  if(S.song&&S.song.url){
+    try{ audio.src=S.song.url; audio.loop=true; audio.volume=S.musicVol; audio.currentTime=0;
+         await audio.play().catch(()=>{}); }catch(e){}
+  }
+
+  document.getElementById('tabRecBtn').textContent="Stop & build MP4";
+  status(`● RECORDING for real now — play your moment in the captured tab. Press Stop when done.`,'#a3e635');
+  stream.getVideoTracks()[0].addEventListener('ended',()=>{ if(tabCap.rec) stopTabCapture(); });
 }
 
-async function finishTabCapture(){
-  const status=(m,c)=>{const el=$("tabRecStatus");el.style.display='block';el.innerHTML=m;el.style.color=c||'#fbbf24'};
-  const stream=tabCap.stream;
-  if(!stream) return;
-  const dur=Math.max(2,S.outPoint-S.inPoint);
+async function stopTabCapture(){
+  if(!tabCap.rec) return;
+  tabCap.rec=false;
+  const status=(m,c)=>{const el=$("tabRecStatus");if(el){el.style.display='block';el.style.color=c||'#fbbf24';el.innerHTML=m}};
+  const {stream,venc,chunkQueue,vcfg,audio:ctxInfo}=tabCap;
+  document.getElementById('tabRecBtn').textContent="Building MP4…";
+  status("Encoding captured frames…");
+
   $("exportModal").classList.add("open");
   $("exportMain").style.display="block";$("exportDone").style.display="none";
-  const paint=(p,m)=>{$("expFill").style.width=p+"%";$("expPct").textContent=Math.round(p)+"%";$("expStatus").textContent=m};
-  paint(5,"Recording from your captured tab…");
+  const paint=(p,m)=>{$("expFill").style.width=p+"%";$("expPct").textContent=Math.round(p)+"%";
+    if(m)$("expStatus").textContent=m};
+  paint(20,"Finalising captured video…");
+
   try{
-    if(!MP4.supported()) throw new Error('MP4 encoder unavailable in this browser');
-    const res=await MP4.renderLive({
-      stream, duration:dur, aspect:S.ratio,
-      captionText:($("captionInput")&&$("captionInput").value)||S.captionText,
-      captionsOn:$("swCap").classList.contains("on"),
-      musicUrl:(S.song&&S.song.url)||null, musicVol:S.musicVol,
-      fade:parseFloat($("fadeSlider").value)||1.5,
-      onProgress:p=>paint(10+p*85, p<0.85?"Encoding captured frames…":"Finishing MP4…")
-    });
-    S.exportedBlob=res.blob;S.exportDownloadUrl=null;S.demoSource=false;
-    S.title=S.title||"Tab capture";
+    await venc.flush(); venc.close();
+    stream.getTracks().forEach(t=>t.stop());
+    try{audio.pause()}catch(e){}
+
+    const {Muxer,ArrayBufferTarget}=window.Mp4Muxer||window.ClipForgeMp4;
+    const pcm=await MP4.mixAudio({sourceUrl:null,inPoint:0,
+      duration:(performance.now()-tabCap.startedAt)/1000,
+      musicUrl:(S.song&&S.song.url)||null,origVol:0,musicVol:S.musicVol,
+      fade:parseFloat($("fadeSlider").value)||1.5}).catch(()=>null);
+
+    const muxer=new Muxer({target:new ArrayBufferTarget(),
+      video:{codec:vcfg.muxer==='vp9'?'vp9':'avc',width:ctxInfo.W,height:ctxInfo.H},
+      ...(pcm?{audio:{codec:'aac',sampleRate:48000,numberOfChannels:1}}:{}),
+      fastStart:'in-memory'});
+    for(const {chunk,meta} of chunkQueue) muxer.addVideoChunk(chunk,meta);
+    paint(70,"Mixing music…");
+    if(pcm){
+      const ae=new AudioEncoder({output:(c,m)=>muxer.addAudioChunk(c,m),error:()=>{}});
+      try{
+        ae.configure({codec:'mp4a.40.2',sampleRate:48000,numberOfChannels:1,bitrate:128000});
+      }catch(e){
+        // no AAC in this browser -> remux without audio rather than fail
+      }
+      try{
+        const FR=1024;
+        for(let o=0;o+FR<=pcm.length;o+=FR){
+          const copy=new Float32Array(pcm.subarray(o,o+FR));
+          const ad=new AudioData({format:'f32-planar',sampleRate:48000,numberOfChannels:1,
+            numberOfFrames:FR,timestamp:Math.round(o/48000*1e6),data:copy});
+          ae.encode(ad); ad.close();
+        }
+        await ae.flush();
+      }catch(e){ console.warn('audio encode skipped',e) }
+      try{ae.close()}catch(e){}
+    }
+    muxer.finalize();
+    const blob=new Blob([muxer.target.buffer],{type:'video/mp4'});
+    S.exportedBlob=blob; S.exportDownloadUrl=null;
+    paint(100,"Done");
+
+    const secs=((performance.now()-tabCap.startedAt)/1000).toFixed(1);
     $("exportMain").style.display="none";$("exportDone").style.display="block";
     $("doneTitle").textContent="Captured — MP4";
     $("doneMeta").style.whiteSpace='pre-wrap';$("doneMeta").style.textAlign='left';
-    $("doneMeta").textContent=`${dur.toFixed(0)}s · ${res.width}×${res.height} · ${res.videoCodec}${res.audio&&res.audio!=='silent'?" + "+res.audio:""} · ${S.song?"♪ "+S.song.title:"no music"}\n\nThis is the real footage you captured, cropped to ${S.ratio.replace("x",":")} with captions burned in.`;
+    $("doneMeta").textContent=
+      `${secs}s · ${ctxInfo.W}×${ctxInfo.H} · ${vcfg.label||'H.264'} · ${(blob.size/1048576).toFixed(2)} MB\n\n`
+      +`This is the footage that was playing while you recorded.`;
     $("downloadBtn").textContent="Download MP4";
-    toast("Tab capture exported as MP4");
+    status("Done — MP4 ready",'#a3e635');
   }catch(e){
     $("exportMain").style.display="none";$("exportDone").style.display="block";
     $("doneTitle").textContent="Capture failed";
     $("doneMeta").style.whiteSpace='pre-wrap';$("doneMeta").style.textAlign='left';
-    $("doneMeta").textContent=String(e&&e.message||e)+"\n\nRun clipforgeCheck() in the console for details.";
+    $("doneMeta").textContent=String(e&&e.message||e);
     $("downloadBtn").textContent="Download project file";
-    toast("Capture failed — see details");
+    status("Failed: "+String(e&&e.message||e),'#fb7185');
   }finally{
     try{stream.getTracks().forEach(t=>t.stop())}catch(e){}
-    tabCap={rec:false,stream:null};
-    $("tabRecBtn").textContent="Record a tab / window";
-    if($("tabRecStatus"))$("tabRecStatus").style.display='none';
+    tabCap={rec:false,stream:null,venc:null,chunkQueue:[],vcfg:null,startedAt:0,audio:null};
+    document.getElementById('tabRecBtn').textContent="Record a tab / window";
   }
 }
 
@@ -3700,7 +3801,7 @@ async function diagnoseShort(){
   }
   return bits.join(' · ');
 }
-const BUILD='v6-selftest';
+const BUILD='v8-realcapture';
 window.clipforgeCheck=async function(){
  const enc={};
  enc.h264=await (async()=>{try{return (await VideoEncoder.isConfigSupported({codec:'avc1.640028',width:1080,height:1920,bitrate:8e6,framerate:30})).supported}catch(e){return false}})();
