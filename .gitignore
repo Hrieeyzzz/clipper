@@ -5,6 +5,8 @@ npm-debug.log*
 # rendered clips & uploaded sources live in the OS tmpdir, never in the repo
 *.mp4
 *.webm
+# ...except the demo stream the studio ships with
+!assets/demo-stream.mp4
 .env
 # keep vendored browser modules (mp4-muxer) - they are committed on purpose
 !vendor/*.mjs
