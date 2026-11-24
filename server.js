@@ -205,13 +205,25 @@ app.get('/api/health', (req, res) => {
     ytdlpPath: BIN.ytdlp,
     canRenderYouTube: !!(BIN.ffmpeg && BIN.ytdlp),
     canRenderUpload: !!BIN.ffmpeg,
-    music: fs.readdirSync(MUSIC_DIR).filter(f => /\.(mp3|m4a|wav|ogg)$/i.test(f))
+    music: listMusic()
   });
 });
 
+function listMusic(){
+  try{
+    const onDisk=fs.readdirSync(MUSIC_DIR).filter(f=>/\.(mp3|m4a|wav|ogg)$/i.test(f));
+    if(onDisk.length) return onDisk;
+  }catch(e){}
+  // serverless bundles sometimes don't include music/ — fall back to a manifest
+  try{
+    const manifest=path.join(ROOT,'music','manifest.json');
+    if(fs.existsSync(manifest)) return JSON.parse(fs.readFileSync(manifest,'utf8'));
+  }catch(e){}
+  return [];
+}
+
 app.get('/api/tracks', (req, res) => {
-  res.json(fs.readdirSync(MUSIC_DIR)
-    .filter(f => /\.(mp3|m4a|wav|ogg)$/i.test(f))
+  res.json(listMusic()
     .map(file => ({
       id: file,
       url: '/music/' + encodeURIComponent(file),
@@ -351,10 +363,15 @@ app.put('/api/upload/:name', express.raw({ type: '*/*', limit: '512mb' }), async
 
 app.get('*', (req, res) => res.sendFile(path.join(ROOT, 'index.html')));
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`ClipForge Pro running on http://0.0.0.0:${PORT}`);
-  console.log(`  ffmpeg: ${BIN.ffmpeg || 'NOT FOUND'}`);
-  console.log(`  yt-dlp: ${BIN.ytdlp || 'NOT FOUND'}`);
-});
+// On Vercel (and other serverless hosts) the platform imports the app instead of
+// letting it listen. Long renders can't run there anyway — the UI falls back to
+// the in-browser WebCodecs MP4 encoder, so /api/health reports what's missing.
+if (!process.env.VERCEL) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`ClipForge Pro running on http://0.0.0.0:${PORT}`);
+    console.log(`  ffmpeg: ${BIN.ffmpeg || 'NOT FOUND'}`);
+    console.log(`  yt-dlp: ${BIN.ytdlp || 'NOT FOUND'}`);
+  });
+}
 
 module.exports = app;

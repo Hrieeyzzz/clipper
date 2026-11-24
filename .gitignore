@@ -6,3 +6,5 @@ npm-debug.log*
 *.mp4
 *.webm
 .env
+# keep vendored browser modules (mp4-muxer) - they are committed on purpose
+!vendor/*.mjs

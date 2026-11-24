@@ -1,0 +1,21 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "builds": [{ "src": "server.js", "use": "@vercel/node" }],
+  "routes": [
+    { "src": "/vendor/(.*)", "dest": "/vendor/$1" },
+    { "src": "/music/(.*)", "dest": "/music/$1" },
+    { "src": "/assets/(.*)", "dest": "/assets/$1" },
+    { "src": "/api/(.*)", "dest": "/server.js" },
+    { "src": "/(.*)", "dest": "/server.js" }
+  ],
+  "headers": [
+    {
+      "source": "/vendor/(.*)\\.mjs",
+      "headers": [{ "key": "Content-Type", "value": "text/javascript; charset=utf-8" }]
+    },
+    {
+      "source": "/music/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=86400" }]
+    }
+  ]
+}

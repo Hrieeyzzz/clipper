@@ -291,7 +291,7 @@ footer{border-top:1px solid var(--line);padding:22px 28px;display:flex;justify-c
   </div>
   <div class="nav-right">
     <div class="credits" id="enginePill" title="Render engine status"><i></i><span id="engineText">checking engine…</span></div>
-    <button class="btn btn-grad btn-sm" onclick="openExport()">Export Clip</button>
+    <button class="btn btn-grad btn-sm" onclick="openExport()">Export clip</button>
     <div class="avatar">CF</div>
   </div>
 </nav>
@@ -499,9 +499,9 @@ footer{border-top:1px solid var(--line);padding:22px 28px;display:flex;justify-c
         <div class="toggle-row"><div><b>Normalize loudness</b><span>-14 LUFS for Shorts/Reels</span></div><div class="switch on" onclick="toggleSwitch(this)"></div></div>
         <button class="btn btn-grad" style="width:100%;justify-content:center;margin-top:16px;padding:13px" onclick="openExport()">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><path d="M12 4v12m0 0 4-4m-4 4-4-4"/><path d="M4 20h16"/></svg>
-          Export clip — MP4
+          Export clip
         </button>
-        <p class="hint" style="text-align:center">1080×1920 · H.264 · burned-in captions</p>
+        <p class="hint" style="text-align:center" id="exportEngineHint">1080×1920 · H.264 · burned-in captions</p>
       </div>
     </div>
   </div>
@@ -537,6 +537,7 @@ footer{border-top:1px solid var(--line);padding:22px 28px;display:flex;justify-c
     <div id="exportMain">
       <h3>Export clip</h3>
       <p class="sub">Your clip will be rendered with music, mixed audio and captions burned in.</p>
+      <p class="sub" id="exportCapability" style="font-weight:700"></p>
       <div class="export-preview">
         <img id="expThumb" src="https://img.youtube.com/vi/aqz-KE-bpKQ/hqdefault.jpg" alt="">
         <div><b id="expTitle">Untitled clip</b><span id="expMeta">30s · 9:16 · 1080×1920 MP4</span><br><span id="expSong" style="color:#f9a8d4">No song attached</span></div>
@@ -556,11 +557,11 @@ footer{border-top:1px solid var(--line);padding:22px 28px;display:flex;justify-c
     </div>
     <div id="exportDone" style="display:none;text-align:center">
       <div class="success-ic"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#a3e635" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg></div>
-      <h3>Clip exported</h3>
+      <h3 id="doneTitle">Clip exported</h3>
       <p class="sub" id="doneMeta">Your clip is ready.</p>
       <div class="modal-actions">
         <button class="btn btn-ghost" onclick="closeExport()">Keep editing</button>
-        <button class="btn btn-grad" onclick="downloadClip()">Download MP4</button>
+        <button class="btn btn-grad" id="downloadBtn" onclick="downloadClip()">Download MP4</button>
       </div>
     </div>
   </div>
@@ -569,7 +570,16 @@ footer{border-top:1px solid var(--line);padding:22px 28px;display:flex;justify-c
 <div id="toast"><i></i><span id="toastMsg">Done</span></div>
 <audio id="musicAudio" preload="auto"></audio>
 
+<script type="importmap">
+{"imports":{"mp4-muxer":"/vendor/mp4-muxer.mjs"}}
+</script>
 <script src="https://www.youtube.com/iframe_api"></script>
+<script type="module">
+// Local, same-origin copy (works on static hosts like Vercel — no CDN dependency)
+import {Muxer, ArrayBufferTarget} from '/vendor/mp4-muxer.mjs';
+window.ClipForgeMp4 = {Muxer, ArrayBufferTarget};
+window.dispatchEvent(new Event('clipforge-mp4-ready'));
+</script>
 <script>
 /* ============ DATA ============ */
 const SONGS=[
@@ -594,11 +604,13 @@ const CAPTIONS=[
 ];
 
 /* ============ STATE ============ */
-let S={videoId:null,title:"Untitled clip",isLive:false,isUpload:false,duration:0,currentTime:0,
+const S={videoId:null,title:"Untitled clip",isLive:false,isUpload:false,duration:0,currentTime:0,
  inPoint:0,outPoint:30,preset:30,ratio:"9x16",playing:false,song:null,previewSong:null,
  musicVol:.6,origVol:.9,clips:[],ytPlayer:null,ytReady:false,objectUrl:null,exportedBlob:null,clipCounter:0,
- uploadFile:null,uploadServerFile:null,backend:null,exportJob:null,loopClip:false,demoSource:false,captionText:"OKAY THIS CLIP IS GOING VIRAL"};
+ uploadFile:null,uploadServerFile:null,backend:null,exportJob:null,loopClip:false,demoSource:false,
+ hasThumb:false,thumbUrl:null,captionText:"OKAY THIS CLIP IS GOING VIRAL"};
 const $=id=>document.getElementById(id);
+window.S=S;window.$=$;
 const fmt=s=>{s=Math.max(0,Math.floor(s||0));return String(Math.floor(s/60)).padStart(2,'0')+":"+String(s%60).padStart(2,'0')};
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 
@@ -629,11 +641,12 @@ function loadYouTube(){const id=extractId($("ytUrl").value.trim()); if(!id){toas
 function loadLive(){const id=extractId($("liveUrl").value.trim()); if(!id){toast("Paste a livestream link first");return} loadYT(id,true)}
 function loadLiveDemo(){loadDemoVideo("assets/demo-stream.mp4","Neon Night Live — demo stream")}
 function loadYT(id,live){
- S.videoId=id;S.isLive=live;S.isUpload=false;S.demoSource=false;S.objectUrl=null;
+ S.videoId=id;S.isLive=live;S.isUpload=false;S.demoSource=false;S.objectUrl=null;S.hasThumb=false;S.thumbUrl=null;
  $("emptyState").style.display="none";$("videoEl").style.display="none";$("ytHolder").style.display="block";
  $("liveTag").style.display=live?"flex":"none";
  if(live){$("viewerCount").textContent=(8+Math.random()*20).toFixed(1)+"K watching"}
  const s=SAMPLES.find(x=>x.id===id); S.title=s?s.title:"YouTube video";
+ S.thumbUrl=`https://img.youtube.com/vi/${id}/maxresdefault.jpg`;S.hasThumb=true;
  $("expThumb").src=`https://img.youtube.com/vi/${id}/hqdefault.jpg`;
  createYTPlayer(id);
  toast(live?"Live stream loaded — clip the moment!":"Video loaded");
@@ -642,22 +655,21 @@ function loadYT(id,live){
 let pendingYT=null, pendingYTTimer=null;
 function createYTPlayer(id){
  $("ytHolder").innerHTML="";
- const holder=document.createElement("div");holder.id="ytPlayer";$("ytHolder").appendChild(holder);
- if(window.YT&&YT.Player){
-   buildYTPlayer(holder,id);
- }else{
-   // iframe_api still loading — remember the id and build as soon as it's ready
-   pendingYT={holder,id};
-   holder.innerHTML='<div style="display:grid;place-items:center;height:100%;min-height:380px;color:#9a9ab0;font-size:14px;gap:10px"><div class="spin"></div>Connecting to YouTube…</div>';
-   clearTimeout(pendingYTTimer);
-   pendingYTTimer=setTimeout(()=>{
-     if(!window.YT&&pendingYT&&pendingYT.holder===holder){
-       holder.innerHTML=`<iframe width="100%" height="100%" src="https://www.youtube.com/embed/${id}?rel=0&playsinline=1" frameborder="0" allow="autoplay;encrypted-media" allowfullscreen style="border:0;min-height:380px"></iframe>`;
-       S.duration=600;S.outPoint=S.preset;updateTimelineUI();startTicker();
-       toast("Basic player mode — timeline uses estimated duration");
-     }
-   },5000);
- }
+ const holder=document.createElement("div");holder.id="ytPlayer";
+ holder.style.cssText="width:100%;height:100%;min-height:380px";
+ $("ytHolder").appendChild(holder);
+ if(window.YT&&YT.Player){buildYTPlayer(holder,id);return}
+ pendingYT={holder,id};
+ holder.innerHTML='<div style="display:grid;place-items:center;height:100%;min-height:380px;color:#9a9ab0;font-size:14px;gap:10px;text-align:center"><div class="spin"></div>Connecting to YouTube…</div>';
+ clearTimeout(pendingYTTimer);
+ pendingYTTimer=setTimeout(()=>{
+   if(!window.YT&&pendingYT&&pendingYT.holder===holder){
+     pendingYT=null;
+     holder.innerHTML=`<iframe width="100%" height="100%" src="https://www.youtube.com/embed/${id}?rel=0&playsinline=1" frameborder="0" allow="autoplay;encrypted-media" allowfullscreen style="border:0;min-height:380px"></iframe>`;
+     S.duration=600;S.outPoint=S.preset;updateTimelineUI();startTicker();
+     toast("Basic player mode — timeline uses estimated duration");
+   }
+ },5000);
 }
 function buildYTPlayer(holder,id){
  try{
@@ -693,7 +705,7 @@ $("videoEl").addEventListener("play",updatePlayIcon);$("videoEl").addEventListen
 function loadUpload(e){
  const f=e.target.files[0];if(!f)return;
  if(S.objectUrl)URL.revokeObjectURL(S.objectUrl);
- S.objectUrl=URL.createObjectURL(f);S.isUpload=true;S.demoSource=false;S.videoId=null;S.isLive=false;S.title=f.name;
+ S.objectUrl=URL.createObjectURL(f);S.isUpload=true;S.demoSource=false;S.videoId=null;S.isLive=false;S.title=f.name;S.hasThumb=false;
  S.uploadFile=f;S.uploadServerFile=null;uploadToServer(f);
  $("uploadName").textContent="Loaded: "+f.name+" ("+(f.size/1048576).toFixed(1)+" MB)";
  $("emptyState").style.display="none";$("ytHolder").style.display="none";
@@ -707,7 +719,9 @@ function loadUpload(e){
 async function probeBackend(){
  const pill=$("enginePill"),txt=$("engineText");
  try{
-   const r=await fetch('/api/health',{cache:'no-store'});S.backend=await r.json();
+   const r=await fetch('/api/health',{cache:'no-store',signal:AbortSignal.timeout?AbortSignal.timeout(6000):undefined});
+   if(!r.ok)throw new Error('no api');
+   S.backend=await r.json();
    const b=S.backend;
    if(b.ffmpeg&&b.ytdlp){txt.textContent="engine online";pill.style.color="#a3e635";pill.title="YouTube + upload → real MP4 render"}
    else if(b.ffmpeg){txt.textContent="upload render";pill.style.color="#fbbf24";pill.title="ffmpeg found — uploaded videos render to MP4, YouTube needs yt-dlp"}
@@ -724,9 +738,27 @@ async function probeBackend(){
      if(serverSongs.length){SONGS.length=0;SONGS.push(...serverSongs);renderSongs()}
    }
  }catch(e){
-   S.backend=null;txt.textContent="browser mode";pill.style.color="#fbbf24";
-   pill.title="Static preview — no render server. Run `npm start` for MP4 exports.";
+   S.backend=null;pill.style.color="#fbbf24";
+   pill.title="No render server on this host — exports use the in-browser MP4 encoder.";
+   setEngineLabel();
+   if(!SONGS.length)SONGS.push(...SONGS_STATIC);
+   renderSongs();
  }
+}
+/** single source of truth for the pill (called again once the muxer module lands) */
+function setEngineLabel(){
+ const pill=$("enginePill"),txt=$("engineText");
+ if(!pill||!txt)return;
+ const server=S.backend&&S.backend.ffmpeg;
+ const browser=!!(window.ClipForgeMp4&&window.VideoEncoder&&window.AudioEncoder);
+ if(server&&S.backend.ytdlp){txt.textContent="engine online";pill.style.color="#a3e635";
+   pill.title="Server render: YouTube + uploads → full-quality MP4"}
+ else if(server){txt.textContent="upload render";pill.style.color="#fbbf24";
+   pill.title="Server has ffmpeg (uploads → MP4); YouTube needs yt-dlp installed"}
+ else if(browser){txt.textContent="browser MP4";pill.style.color="#a78bfa";
+   pill.title="No server renderer — exports encode MP4 in your browser (Chrome/Edge)"}
+ else{txt.textContent="no encoder";pill.style.color="#fb7185";
+   pill.title="No server ffmpeg and this browser lacks WebCodecs — use Chrome/Edge or run npm start"}
 }
 async function uploadToServer(file){
  try{
@@ -738,7 +770,7 @@ async function uploadToServer(file){
  }catch(e){console.warn("Server upload unavailable",e);S.uploadServerFile=null}
 }
 function loadDemoVideo(url,label){
- S.isUpload=true;S.videoId=null;S.isLive=true;S.demoSource=true;S.title=label||"Demo stream";
+ S.isUpload=true;S.videoId=null;S.isLive=true;S.demoSource=true;S.hasThumb=false;S.title=label||"Demo stream";
  S.objectUrl=url;S.uploadFile=null;S.uploadServerFile=null;
  $("emptyState").style.display="none";$("ytHolder").style.display="none";
  const v=$("videoEl");v.style.display="block";v.src=url;v.volume=S.origVol;v.loop=true;v.muted=true;
@@ -779,7 +811,7 @@ function setIn(){S.inPoint=getCurrentTime();if(S.outPoint<S.inPoint+S.preset)S.o
 function setOut(){S.outPoint=getCurrentTime();if(S.outPoint<S.inPoint)S.inPoint=Math.max(0,S.outPoint-S.preset);updateTimelineUI();toast("Out point: "+fmt(S.outPoint))}
 function playClipRange(){seekTo(S.inPoint);S.loopClip=true;playPauseYT(true);setTimeout(()=>{S.loopClip=false},(S.outPoint-S.inPoint)*1000+200);toast("Playing clip range")}
 function updateTimelineUI(){
- if(S.videoId||S.demoSource)requestAnimationFrame(()=>drawWaveform(S.videoId||"demo"));
+ if(S.videoId||S.demoSource){const raf=window.requestAnimationFrame||((f)=>setTimeout(f,16));raf(()=>drawWaveform(S.videoId||"demo"))}
  const d=getDuration()||600;
  $("tlSelection").style.left=(S.inPoint/d*100)+"%";
  $("tlSelection").style.width=((S.outPoint-S.inPoint)/d*100)+"%";
@@ -824,7 +856,8 @@ $("tlTrack").addEventListener("pointercancel",()=>tlDrag=null);
 /* waveform */
 function seededRand(seed){let x=Math.sin(seed)*10000;return x-Math.floor(x)}
 function drawWaveform(seedStr){
- const c=$("waveCanvas"),ctx=c.getContext("2d");
+ const c=$("waveCanvas");if(!c)return;
+ const ctx=c.getContext&&c.getContext("2d");if(!ctx)return;
  const w=c.width=c.offsetWidth*2,h=c.height=c.offsetHeight*2;ctx.clearRect(0,0,w,h);
  const seed=seedStr?seedStr.split("").reduce((a,ch)=>a+ch.charCodeAt(0),0):42;
  const bars=140,bw=w/bars;
@@ -840,7 +873,8 @@ async function drawWaveformFromAudio(video){
  try{
    const ac=new (window.AudioContext||window.webkitAudioContext)();
    const buf=await fetch(S.objectUrl).then(r=>r.arrayBuffer()).then(b=>ac.decodeAudioData(b));
-   const ch=buf.getChannelData(0),c=$("waveCanvas"),ctx=c.getContext("2d");
+   const ch=buf.getChannelData(0),c=$("waveCanvas");
+   const ctx=c&&c.getContext?c.getContext("2d"):null;if(!ctx)return;
    const w=c.width=c.offsetWidth*2,h=c.height=c.offsetHeight*2;ctx.clearRect(0,0,w,h);
    const bars=140,step=Math.floor(ch.length/bars);
    for(let i=0;i<bars;i++){let s=0;for(let j=0;j<step;j+=50)s+=Math.abs(ch[i*step+j]||0);
@@ -975,15 +1009,273 @@ function deleteClip(i){S.clips.splice(i,1);renderClips();$("statClips").textCont
 function clearClips(){S.clips=[];renderClips();$("statClips").textContent=0;toast("All clips cleared")}
 function exportClip(i){const c=S.clips[i];S.inPoint=c.start;S.outPoint=c.end;updateTimelineUI();openExport()}
 
+/* ============ IN-BROWSER MP4 RENDERER (WebCodecs + mp4-muxer) ============ */
+const MP4 = (() => {
+  const hasCodecs = () => !!(window.ClipForgeMp4 && window.VideoEncoder && window.AudioEncoder);
+  const ready = () => hasCodecs();
+  const canCapture = (el) => !!(el && el.tagName === 'VIDEO' && el.src && !el.src.startsWith('blob:null'));
+
+  async function decodeAudio(url){
+    if(!url) return null;
+    try{
+      const ac=new (window.AudioContext||window.webkitAudioContext)();
+      const buf=await (await fetch(url)).arrayBuffer();
+      const audio=await new Promise((res,rej)=>{
+        const p=ac.decodeAudioData(buf,res,rej);
+        if(p&&p.then)p.then(res,rej);
+      });
+      try{ const c=ac.close(); if(c&&c.catch)c.catch(()=>{}); }catch(e){}
+      return audio;
+    }catch(e){ console.warn('could not decode audio', e); return null; }
+  }
+
+  async function pickConfig(W,H,FPS){
+    const tries=[
+      {codec:'avc1.640028',width:W,height:H,bitrate:8_000_000,framerate:FPS},
+      {codec:'avc1.4d4028',width:W,height:H,bitrate:8_000_000,framerate:FPS},
+      {codec:'avc1.42e033',width:W,height:H,bitrate:6_000_000,framerate:FPS}
+    ];
+    for(const c of tries){
+      try{const r=await VideoEncoder.isConfigSupported(c);if(r&&r.supported)return c}catch(e){}
+    }
+    throw new Error('This browser cannot encode H.264 MP4 — use Chrome or Edge');
+  }
+
+  /** mix original + music offline, returns mono Float32 PCM at 48k */
+  async function mixAudio({sourceUrl, inPoint, duration, musicUrl, origVol, musicVol, fade}){
+    const [orig, music] = await Promise.all([decodeAudio(sourceUrl), decodeAudio(musicUrl)]);
+    if(!orig && !music) return null;
+    const SR=48000, frames=Math.max(1, Math.ceil(SR*duration));
+    const off=new OfflineAudioContext(1, frames, SR);
+    const f=Math.max(0.01, Math.min(fade||1.5, duration/2));
+
+    if(orig){
+      const src=off.createBufferSource();
+      src.buffer=orig;
+      const g=off.createGain();
+      g.gain.value=clamp(origVol,0,2);
+      src.connect(g).connect(off.destination);
+      // seek into the buffer, clamp to what exists
+      const off0=Math.min(inPoint, Math.max(0, orig.duration-0.05));
+      const avail=Math.max(0, orig.duration-off0);
+      src.start(0, off0, Math.min(duration, avail));
+    }
+    if(music){
+      const loops=Math.ceil(duration/Math.max(0.1,music.duration))+1;
+      for(let i=0;i<loops;i++){
+        const start=i*music.duration;
+        if(start>=duration) break;
+        const src=off.createBufferSource();
+        src.buffer=music;
+        const g=off.createGain();
+        const base=clamp(musicVol,0,2);
+        g.gain.setValueAtTime(0.0001, start);
+        g.gain.linearRampToValueAtTime(base, start+f);
+        g.gain.setValueAtTime(base, Math.max(start+f, duration-f));
+        g.gain.linearRampToValueAtTime(0.0001, Math.max(start+f+0.01, duration-0.02));
+        src.connect(g).connect(off.destination);
+        src.start(start, 0, Math.min(music.duration, Math.max(0.01, duration-start)));
+      }
+    }
+    const rendered=await off.startRendering();
+    return rendered.getChannelData(0);
+  }
+
+  async function encodeAudioPcm(pcm, muxer, onProgress){
+    const ae=new AudioEncoder({
+      output:(chunk,meta)=>muxer.addAudioChunk(chunk,meta),
+      error:(e)=>{throw e}
+    });
+    ae.configure({codec:'mp4a.40.2',sampleRate:48000,numberOfChannels:1,bitrate:128000});
+    const FRAME=1024;                       // AAC frame size
+    for(let o=0;o<pcm.length;o+=FRAME){
+      const n=Math.min(FRAME,pcm.length-o);
+      if(n<FRAME && o+FRAME>pcm.length) break;   // drop the ragged tail, keeps timestamps clean
+      const copy=new Float32Array(n);
+      copy.set(pcm.subarray(o,o+n));
+      const ad=new AudioData({
+        format:'f32-planar', sampleRate:48000, numberOfChannels:1,
+        numberOfFrames:n, timestamp:Math.round(o/48000*1e6), data:copy
+      });
+      ae.encode(ad); ad.close();
+      if(onProgress && (o/FRAME)%40===0) onProgress(o/pcm.length);
+    }
+    await ae.flush(); ae.close();
+  }
+
+  async function render(opts){
+    const {video, imageSrc, sourceUrl, inPoint, duration, aspect, captionText, captionsOn,
+           origVol, musicUrl, musicVol, fade, onProgress} = opts;
+    if(!hasCodecs()) throw new Error('Browser MP4 encoder unavailable');
+
+    const W = aspect==='9x16'?1080:aspect==='1x1'?1080:1920;
+    const H = aspect==='9x16'?1920:aspect==='1x1'?1080:1080;
+    const FPS = 30;
+    const cfg = await pickConfig(W,H,FPS);
+    const motion = canCapture(video);
+
+    // audio first (offline + deterministic)
+    const pcm = await mixAudio({sourceUrl: motion?sourceUrl:null, inPoint, duration, musicUrl, origVol, musicVol, fade});
+
+    const muxer=new window.ClipForgeMp4.Muxer({
+      target:new window.ClipForgeMp4.ArrayBufferTarget(),
+      video:{codec:'avc',width:W,height:H},
+      ...(pcm?{audio:{codec:'aac',sampleRate:48000,numberOfChannels:1}}:{}),
+      fastStart:'in-memory'
+    });
+    const ve=new VideoEncoder({output:(c,m)=>muxer.addVideoChunk(c,m),error:(e)=>{throw e}});
+    ve.configure(cfg);
+
+    const canvas=document.createElement('canvas'); canvas.width=W; canvas.height=H;
+    const ctx=canvas.getContext('2d',{alpha:false});
+    let poster=null;
+    if(!motion && imageSrc){
+      poster=await new Promise(res=>{
+        const im=new Image(); im.crossOrigin='anonymous';
+        im.onload=()=>res(im); im.onerror=()=>res(null); im.src=imageSrc;
+      });
+    }
+
+    if(motion){
+      video.muted=true;
+      await new Promise(r=>{ if(video.readyState>=2) return r();
+        video.addEventListener('loadeddata',r,{once:true}); setTimeout(r,3000); });
+      video.currentTime=inPoint;
+      await new Promise(r=>{ if(Math.abs(video.currentTime-inPoint)<0.25) return r();
+        video.addEventListener('seeked',r,{once:true}); setTimeout(r,2500); });
+      await video.play().catch(()=>{});
+    }
+
+    const font=Math.round(W/22);
+    const draw=(t)=>{
+      ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+      if(motion){
+        const vw=video.videoWidth||16, vh=video.videoHeight||9;
+        const sc=Math.max(W/vw,H/vh);
+        ctx.drawImage(video,(W-vw*sc)/2,(H-vh*sc)/2,vw*sc,vh*sc);
+      }else if(poster){
+        const p=clamp(t/Math.max(0.1,duration),0,1), z=1.05+0.10*p;
+        const vw=poster.width, vh=poster.height;
+        const sc=Math.max(W/vw,H/vh)*z;
+        ctx.drawImage(poster,(W-vw*sc)/2,(H-vh*sc)/2,vw*sc,vh*sc);
+      }else{
+        const g=ctx.createLinearGradient(0,0,W,H);
+        g.addColorStop(0,'#7c5cff');g.addColorStop(.55,'#ff4d8d');g.addColorStop(1,'#07070c');
+        ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+      }
+      if(captionsOn && captionText){
+        ctx.font=`800 ${font}px Inter, system-ui, sans-serif`;
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        const pad=Math.round(font*0.55), maxW=W-pad*4;
+        const words=captionText.split(/\s+/); const lines=[]; let line='';
+        for(const w of words){
+          const test=line?line+' '+w:w;
+          if(ctx.measureText(test).width>maxW && line){lines.push(line); line=w} else line=test;
+        }
+        if(line)lines.push(line);
+        const lh=font*1.25, boxH=lh*lines.length+pad*2;
+        let boxW=0; lines.forEach(l=>boxW=Math.max(boxW,ctx.measureText(l).width));
+        boxW=Math.min(W-pad*2,boxW+pad*2);
+        const bx=(W-boxW)/2, by=H-Math.round(H*0.12)-boxH;
+        ctx.fillStyle='rgba(0,0,0,0.58)'; ctx.fillRect(bx,by,boxW,boxH);
+        ctx.fillStyle='#fff';
+        lines.forEach((l,i)=>ctx.fillText(l,W/2,by+pad+lh*(i+0.5)));
+      }
+      if(!motion){
+        ctx.fillStyle='rgba(0,0,0,0.66)'; ctx.fillRect(0,0,W,Math.round(H*0.05));
+        ctx.font=`700 ${Math.round(font*0.5)}px Inter, system-ui, sans-serif`;
+        ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle='#fbbf24';
+        ctx.fillText('STILL + MUSIC  ·  add ffmpeg on the server for full video', W/2, Math.round(H*0.025));
+      }
+    };
+
+    const totalFrames=Math.max(2,Math.round(duration*FPS));
+    // For real footage we must follow the video's clock (the element only plays in real time);
+    // for stills we can encode as fast as the machine allows.
+    const wallClock = motion;
+    const t0=performance.now();
+    let idx=0;
+    const raf=window.requestAnimationFrame||((f)=>setTimeout(f,16));
+    await new Promise(resolve=>{
+      const step=()=>{
+        if(wallClock){
+          const elapsed=(performance.now()-t0)/1000;
+          const target=Math.min(totalFrames, Math.floor(elapsed*FPS));
+          while(idx<=target){
+            draw(idx/FPS);
+            const f=new VideoFrame(canvas,{timestamp:Math.round(idx*(1e6/FPS))});
+            ve.encode(f,{keyFrame:idx%(FPS*2)===0});
+            f.close(); idx++;
+          }
+          onProgress&&onProgress(clamp(idx/totalFrames,0,1));
+          if(idx<totalFrames) raf(step); else resolve();
+        }else{
+          // encode a batch, then yield so the UI stays responsive
+          const BATCH=15;
+          for(let n=0;n<BATCH&&idx<totalFrames;n++,idx++){
+            draw(idx/FPS);
+            const f=new VideoFrame(canvas,{timestamp:Math.round(idx*(1e6/FPS))});
+            ve.encode(f,{keyFrame:idx%(FPS*2)===0});
+            f.close();
+          }
+          onProgress&&onProgress(clamp(idx/totalFrames,0,1));
+          if(idx<totalFrames) raf(step); else resolve();
+        }
+      };
+      raf(step);
+    });
+    if(motion) video.pause();
+    await ve.flush(); ve.close();
+
+    if(pcm) await encodeAudioPcm(pcm, muxer);
+
+    muxer.finalize();
+    const blob=new Blob([muxer.target.buffer],{type:'video/mp4'});
+    return {blob,width:W,height:H,stillOnly:!motion,ext:'mp4'};
+  }
+
+  return {supported:hasCodecs, ready, canCapture, render, decodeAudio};
+})();
+window.MP4=MP4;
+
 /* ============ EXPORT ============ */
+function waitForMp4Module(ms=4000){
+ return new Promise(res=>{
+   if(window.ClipForgeMp4) return res(true);
+   const done=()=>{cleanup();res(!!window.ClipForgeMp4)};
+   const cleanup=()=>{window.removeEventListener('clipforge-mp4-ready',done);clearTimeout(t)};
+   window.addEventListener('clipforge-mp4-ready',done);
+   const t=setTimeout(done,ms);
+ });
+}
 function openExport(){
  if(!S.videoId&&!S.isUpload){toast("Load a source first");return}
  S.exportDownloadUrl=null;S.exportedBlob=null;
  $("exportModal").classList.add("open");$("exportMain").style.display="block";$("exportDone").style.display="none";
  $("expTitle").textContent=S.title;$("expFill").style.width="0%";$("expPct").textContent="0%";$("expStatus").textContent="Ready to render";
  $("expBtn").textContent="Start export";$("expBtn").disabled=false;
+ const willServer=S.backend&&S.backend.ffmpeg&&(S.uploadServerFile||S.videoId||S.demoSource);
+ const willMp4=!!(window.ClipForgeMp4&&window.VideoEncoder)&&(S.isUpload||(S.videoId&&S.hasThumb));
+ $("exportEngineHint").textContent=willServer
+   ? "Rendered on the server → MP4 · 1080p · H.264 · AAC"
+   : willMp4 ? "Rendered in your browser → MP4 · H.264 · AAC"
+   : "No MP4 encoder here → project file (use Chrome/Edge or add ffmpeg)";
  [1,2,3,4].forEach(n=>$("step"+n).className="exp-step");
  $("expSong").textContent=S.song?("Song: "+S.song.title+" · "+S.song.artist):"No song attached";
+ const cap=$("exportCapability");
+ const mp4Ready=!!(window.ClipForgeMp4&&window.VideoEncoder);
+ if(S.backend&&S.backend.ffmpeg&&(S.uploadServerFile||S.videoId||S.demoSource)){
+   cap.textContent="Server render — full 1080p MP4 with your video and music.";
+   cap.style.color="#a3e635";
+ }else if(mp4Ready){
+   cap.textContent=S.isUpload
+     ? "In-browser render — 1080p MP4 with original audio + music (Chrome/Edge)."
+     : "No server renderer here: exports a still + music MP4 (YouTube frames can't be captured in-browser).";
+   cap.style.color="#fbbf24";
+ }else{
+   cap.textContent="This browser can't encode MP4 — use Chrome/Edge, or run the server with ffmpeg.";
+   cap.style.color="#fbbf24";
+ }
 }
 function closeExport(){$("exportModal").classList.remove("open")}
 $("exportModal").addEventListener("click",e=>{if(e.target===$("exportModal"))closeExport()});
@@ -991,20 +1283,26 @@ async function runExport(){
  $("expBtn").disabled=true;$("expBtn").textContent="Rendering…";
  const clipLen=Math.max(1,S.outPoint-S.inPoint);
  const steps=[["step1","Trimming & smart-cropping…"],["step2","Mixing audio"+(S.song?" + "+S.song.title:"")+"…"],["step3","Burning in captions…"],["step4","Encoding MP4…"]];
- const paint=(i,label,extra)=>{steps.forEach((s,j)=>{$(s[0]).className="exp-step "+(j<i?"done":j===i?"active":"")});
-   $("expStatus").textContent=label;const pct=extra!==undefined?extra:Math.min(99,i*25+25);
-   $("expFill").style.width=pct+"%";$("expPct").textContent=Math.round(pct)+"%"};
- const finish=(msg)=>{steps.forEach(s=>$(s[0]).className="exp-step done");$("expFill").style.width="100%";$("expPct").textContent="100%";
+ const paint=(i,label,pct)=>{steps.forEach((s,j)=>{$(s[0]).className="exp-step "+(j<i?"done":j===i?"active":"")});
+   $("expStatus").textContent=label;
+   const p=pct!==undefined?pct:Math.min(99,i*25+25);
+   $("expFill").style.width=p+"%";$("expPct").textContent=Math.round(p)+"%"};
+ const finish=(msg,kind)=>{steps.forEach(s=>$(s[0]).className="exp-step done");$("expFill").style.width="100%";$("expPct").textContent="100%";
    $("exportMain").style.display="none";$("exportDone").style.display="block";
    $("doneMeta").textContent=msg;
+   const btn=$("downloadBtn");
+   if(kind==="mp4"){btn.textContent="Download MP4";$("doneTitle").textContent="Clip exported — MP4"}
+   else if(kind==="webm"){btn.textContent="Download video";$("doneTitle").textContent="Clip captured"}
+   else{btn.textContent="Download project file";$("doneTitle").textContent="Project saved"}
    if(!S.clips.find(c=>c.start===S.inPoint&&c.end===S.outPoint))saveClip("Exported");
-   toast("Export complete")};
+   toast(kind==="mp4"?"MP4 exported":"Export finished")};
 
  const serverFile=S.uploadServerFile;
  const canYouTube=!!(S.videoId&&S.backend&&S.backend.canRenderYouTube&&S.backend.ffmpeg);
  const canUpload=!!(serverFile&&S.backend&&S.backend.canRenderUpload);
  const canDemo=!!(S.demoSource&&S.backend&&S.backend.ffmpeg);
 
+ /* ---------- 1. server render (best quality) ---------- */
  if(canYouTube||canUpload||canDemo){
    paint(0,"Sending render job to the studio server…",8);
    try{
@@ -1014,35 +1312,66 @@ async function runExport(){
        fade:parseFloat($("fadeSlider").value)||1.5,captions:$("swCap").classList.contains("on"),
        captionText:($("captionInput")&&$("captionInput").value)||S.captionText,quality:"1080"};
      const r=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-     if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||('Server error '+r.status));
-     const {jobId}=await r.json();S.exportJob=jobId;
-     let stageSeen="";
+     const ct=r.headers.get('content-type')||'';
+     if(!ct.includes('application/json'))throw new Error('No render server on this host');
+     const js=await r.json();
+     if(!r.ok)throw new Error(js.error||('Server error '+r.status));
+     const jobId=js.jobId;S.exportJob=jobId;
      while(true){
        await new Promise(r=>setTimeout(r,900));
        const j=await fetch('/api/jobs/'+jobId).then(x=>x.json());
-       const pct=j.progress!==undefined?j.progress:(j.status==="done"?100:0);
-       const idx=j.stage&&/Fetch/.test(j.stage)?0:j.stage&&/Download/.test(j.stage)?0:j.stage&&/Encoding/.test(j.stage)?3:2;
-       paint(idx,j.stage?j.stage+"…":"Rendering…",Math.max(8,pct));
-       if(j.status==="done"){S.exportedBlob=null;S.exportDownloadUrl=j.download;return finish(`${S.title} · ${clipLen.toFixed(0)}s · ${S.ratio.replace("x",":")} · ${S.song?"♪ "+S.song.title:"No song"} — rendered MP4 ready`)}
-       if(j.status==="error"){throw new Error(j.error||"Render failed")}
+       const pct=j.progress!==undefined?j.progress:0;
+       const idx=/Encoding/.test(j.stage||"")?3:/Download|Fetch/.test(j.stage||"")?0:2;
+       paint(idx,(j.stage||"Rendering")+"…",Math.max(8,pct));
+       if(j.status==="done"){S.exportedBlob=null;S.exportDownloadUrl=j.download;
+         return finish(`${S.title} · ${clipLen.toFixed(0)}s · ${S.ratio.replace("x",":")} · ${S.song?"♪ "+S.song.title:"No song"} — MP4 rendered on the server`,"mp4")}
+       if(j.status==="error")throw new Error(j.error||"Render failed");
      }
    }catch(err){
-     console.warn(err);
-     toast("Server render failed — downloading project file instead");
+     console.warn("server render unavailable",err);
    }
  }
 
- // Fallback A — uploaded video in the browser: real WebM capture
- if(S.isUpload&&S.uploadFile){
-   try{paint(0,"Capturing clip in your browser…",20);await new Promise(r=>setTimeout(r,400));
-     paint(1,"Mixing audio…",45);paint(2,"Burning captions…",70);
-     await recordUploadClip();paint(3,"Finalising WebM…",92);
-     return finish(`${S.title} · ${clipLen.toFixed(0)}s · ${S.ratio.replace("x",":")} — WebM ready to download`);
-   }catch(e){console.warn(e);toast("Browser capture failed — exporting project file")}
+ /* ---------- 2. in-browser MP4 (Chrome/Edge, WebCodecs) ---------- */
+ const youtubeStill=!!(S.videoId)&&S.hasThumb;
+ await waitForMp4Module();
+ if(MP4.supported()){
+   try{
+     paint(0,"Preparing in-browser encoder…",12);await new Promise(r=>setTimeout(r,350));
+     paint(1,"Mixing original audio + music…",35);
+     const res=await MP4.render({
+       video:S.isUpload?$("videoEl"):null,
+       sourceUrl:S.isUpload?S.objectUrl:null,
+       imageSrc:youtubeStill?S.thumbUrl:null,
+       inPoint:S.inPoint,duration:clipLen,aspect:S.ratio,
+       captionText:($("captionInput")&&$("captionInput").value)||S.captionText,
+       captionsOn:$("swCap").classList.contains("on"),
+       origVol:S.origVol,musicUrl:(S.song&&S.song.url)||null,musicVol:S.musicVol,
+       fade:parseFloat($("fadeSlider").value)||1.5,
+       onProgress:p=>{ const base=45+p*48; paint(p<0.4?1:p<0.75?2:3,
+         p<0.4?"Capturing frames…":p<0.75?"Burning in captions…":"Encoding MP4…", base)}
+     });
+     S.exportedBlob=res.blob;S.exportDownloadUrl=null;
+     const note=res.stillOnly?" (video frame not capturable in-browser — still + music)":"";
+     return finish(`${S.title} · ${clipLen.toFixed(0)}s · ${res.width}×${res.height} · ${S.song?"♪ "+S.song.title:"No song"}${note}`,"mp4");
+   }catch(err){
+     console.warn("in-browser MP4 failed",err);
+     toast("In-browser MP4 unavailable: "+(err.message||err));
+   }
  }
- // Fallback B — project manifest
+
+ /* ---------- 3. WebM capture for uploads (Safari/Firefox, or MP4 encoder failure) ---------- */
+ if(S.isUpload&&S.uploadFile&&/^blob:/.test(S.objectUrl||"")){
+   try{paint(0,"Capturing clip in your browser…",20);await new Promise(r=>setTimeout(r,300));
+     paint(1,"Mixing audio…",45);paint(2,"Burning captions…",70);
+     await recordUploadClip();paint(3,"Finalising video…",92);
+     return finish(`${S.title} · ${clipLen.toFixed(0)}s · ${S.ratio.replace("x",":")} — video captured (WebM)`,"webm");
+   }catch(e){console.warn('webm fallback failed',e);toast("Browser capture failed — saving project file")}
+ }
+
+ /* ---------- 4. honest project file ---------- */
  paint(3,"Packing project file…",95);
- finish(`${S.title} · ${clipLen.toFixed(0)}s · ${S.ratio.replace("x",":")} — project file ready (install ffmpeg + yt-dlp on the server for direct MP4)`);
+ finish(`${S.title} · ${clipLen.toFixed(0)}s · ${S.ratio.replace("x",":")} — no MP4 encoder available here. The project file re-opens this clip; for a direct MP4 use Chrome/Edge, or run the render server with ffmpeg + yt-dlp.`,"json");
 }
 async function recordUploadClip(){
  const v=$("videoEl");const dur=S.outPoint-S.inPoint;if(dur<=0)return;
@@ -1076,16 +1405,22 @@ function downloadClip(){
    const a=document.createElement("a");a.href=S.exportDownloadUrl;a.download="";a.click();return;
  }
  if(S.exportedBlob){
-   const a=document.createElement("a");a.href=URL.createObjectURL(S.exportedBlob);a.download="clipforge-clip.webm";a.click();
-   toast("WebM clip downloaded");return;
+   const isMp4=S.exportedBlob.type==="video/mp4";
+   const a=document.createElement("a");
+   a.href=URL.createObjectURL(S.exportedBlob);
+   a.download=(S.title||"clipforge-clip").replace(/[^\w\s-]/g,"").trim().slice(0,50)+(isMp4?".mp4":".webm");
+   a.click();
+   toast(isMp4?"MP4 downloaded":"Video downloaded");
+   return;
  }
- const manifest={app:"ClipForge Pro",title:S.title,range:[fmt(S.inPoint),fmt(S.outPoint)],duration_s:+(S.outPoint-S.inPoint).toFixed(1),
-   ratio:S.ratio,song:S.song?S.song.title:null,source:S.videoId?"https://youtube.com/watch?v="+S.videoId:"upload",
-   caption:S.captionText,exported:new Date().toISOString(),
-   note:"Install ffmpeg + yt-dlp on the server to render this straight to MP4."};
+ const manifest={app:"ClipForge Pro",title:S.title,range:[fmt(S.inPoint),fmt(S.outPoint)],
+   duration_s:+(S.outPoint-S.inPoint).toFixed(1),ratio:S.ratio,song:S.song?S.song.title:null,
+   source:S.videoId?"https://youtube.com/watch?v="+S.videoId:(S.uploadFile?S.uploadFile.name:"demo"),
+   caption:($("captionInput")&&$("captionInput").value)||S.captionText,exported:new Date().toISOString()};
  const blob=new Blob([JSON.stringify(manifest,null,2)],{type:"application/json"});
- const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="clipforge-project.json";a.click();
- toast("Project file downloaded");
+ const a=document.createElement("a");a.href=URL.createObjectURL(blob);
+ a.download="clipforge-project.json";a.click();
+ toast("Project file downloaded — this is not a video");
 }
 
 /* ============ KEYBOARD ============ */
@@ -1100,6 +1435,11 @@ document.addEventListener("keydown",e=>{
 /* ============ INIT ============ */
 renderSongs();renderClips();updateTimelineUI();
 probeBackend();
+window.addEventListener('clipforge-mp4-ready',()=>{
+ setEngineLabel();
+ if($("exportModal").classList.contains("open"))openExport();
+});
+setEngineLabel();
 drawWaveform("demo");
 loadDemoVideo("assets/demo-stream.mp4","Neon Night Live — demo stream");
 </script>

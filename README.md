@@ -41,6 +41,26 @@ Custom paths are supported: `FFMPEG_PATH=/usr/local/bin/ffmpeg YTDLP_PATH=/usr/l
 > Rendering YouTube content requires you to have the rights to the source
 > material (your own streams, VODs, or content you're licensed to clip).
 
+## Export tiers (it always tells you which one you're getting)
+
+The export modal states the truth up front — before you click Start export, and on
+the result screen:
+
+| Tier | Where | What you get |
+| ---- | ----- | ------------ |
+| **Server render** | anywhere with `ffmpeg` (+ `yt-dlp` for YouTube) | full 1080p MP4 of the real video, original audio + music mixed, captions burned in |
+| **Browser MP4** | Chrome / Edge, no server needed | real 1080p MP4 (H.264/AAC) via WebCodecs + `vendor/mp4-muxer.mjs`. Uploaded files get real video frames; YouTube sources export a Ken-Burns *still + music* MP4 because a cross-origin YouTube iframe can never be painted to a canvas |
+| **Browser WebM** | Safari / Firefox | canvas capture of uploaded video with mixed audio (`.webm`) |
+| **Project file** | no encoder at all | a `.json` that re-opens the clip in the editor — the button says so, it is never labelled MP4 |
+
+The navbar pill shows the active engine: `engine online`, `upload render`,
+`browser MP4`, or `no encoder`.
+
+> **Vercel:** serverless functions there have no `ffmpeg`/`yt-dlp`, so exports use
+> the in-browser MP4 tier. That's fine for uploaded video; for YouTube footage
+> pointing the app at a VPS/Render/Railway instance with both binaries installed
+> gives you real video MP4s.
+
 ## Music
 
 Drop licensed MP3s into **`music/`** — they're served at `/music/<file>` and appear
@@ -88,8 +108,10 @@ waveform to move the selection.
 ```
 index.html      the studio (UI, player, timeline, mixer, export modal)
 server.js       express server + ffmpeg/yt-dlp render pipeline
-music/          your licensed tracks (demo tracks included)
+vendor/         mp4-muxer (MIT) for in-browser MP4 muxing
+music/          your licensed tracks (demo tracks included) + manifest.json
 assets/         demo livestream used by the preview
+vercel.json     deploy config (UI + in-browser MP4 export)
 ```
 
 ## Deploying
