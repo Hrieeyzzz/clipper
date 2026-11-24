@@ -552,6 +552,7 @@ footer{border-top:1px solid var(--line);padding:22px 28px;display:flex;justify-c
       </div>
       <div class="modal-actions">
         <button class="btn btn-ghost" onclick="closeExport()">Cancel</button>
+        <button class="btn btn-ghost" onclick="selfTest()" title="Encode a 1-second test clip to check your browser">Test encoder</button>
         <button class="btn btn-grad" id="expBtn" onclick="runExport()">Start export</button>
       </div>
     </div>
@@ -3148,7 +3149,7 @@ const MP4 = (() => {
             videoCodec:vLabel};
   }
 
-  return {supported:hasCodecs, ready, canCapture, render, decodeAudio};
+  return {supported:hasCodecs, ready, canCapture, render, decodeAudio, mixAudio};
 })();
 window.MP4=MP4;
 
@@ -3218,7 +3219,15 @@ async function runExport(){
    $("exportMain").style.display="none";$("exportDone").style.display="block";
    $("doneMeta").textContent=msg;
    const btn=$("downloadBtn");
+   $("doneMeta").style.whiteSpace='pre-wrap';
+   $("doneMeta").style.textAlign='left';
    if(kind==="mp4"){btn.textContent="Download MP4";$("doneTitle").textContent="Clip exported — MP4"}
+   else if(kind==="error"){
+     $("doneTitle").textContent="MP4 export unavailable";
+     btn.textContent="Download project file";
+     const ic=$("doneTitle").previousElementSibling;
+     if(ic){ic.style.background='rgba(251,191,36,.14)';ic.style.borderColor='#fbbf24'}
+   }
    else if(kind==="webm"){btn.textContent="Download video";$("doneTitle").textContent="Clip captured"}
    else{btn.textContent="Download project file";$("doneTitle").textContent="Project saved"}
    if(!S.clips.find(c=>c.start===S.inPoint&&c.end===S.outPoint))saveClip("Exported");
@@ -3284,12 +3293,16 @@ async function runExport(){
      return finish(`${S.title} · ${clipLen.toFixed(0)}s · ${res.width}×${res.height} · ${res.videoCodec}${acodec?" + "+acodec:""} · ${S.song?"♪ "+S.song.title:"No song"}${note}`,"mp4");
    }catch(err){
      console.warn("in-browser MP4 failed",err);
-     toast("In-browser MP4 unavailable: "+(err.message||err));
+     S.lastMp4Error = (err && (err.name+': '+err.message)) || String(err);
+     S.lastMp4Stack = String(err && err.stack || '').slice(0,600);
+     toast("MP4 encoder error — see details on the result screen");
    }
+ }else{
+   S.lastMp4Error = 'Encoder not available: ' + (await diagnoseShort());
  }
 
- /* ---------- 3. WebM capture for uploads (Safari/Firefox, or MP4 encoder failure) ---------- */
- if(S.isUpload&&S.uploadFile&&/^blob:/.test(S.objectUrl||"")){
+ /* ---------- 3. WebM capture — a real video file beats a JSON project ---------- */
+ if(window.MediaRecorder && (S.isUpload || (S.videoId && S.hasThumb))){
    try{paint(0,"Capturing clip in your browser…",20);await new Promise(r=>setTimeout(r,300));
      paint(1,"Mixing audio…",45);paint(2,"Burning captions…",70);
      await recordUploadClip();paint(3,"Finalising video…",92);
@@ -3297,36 +3310,76 @@ async function runExport(){
    }catch(e){console.warn('webm fallback failed',e);toast("Browser capture failed — saving project file")}
  }
 
- /* ---------- 4. honest project file ---------- */
+ /* ---------- 4. explain the failure, then offer the project file ---------- */
+ if(S.lastMp4Error){
+   return finish(`MP4 encoding is unavailable in this browser.\n\nReason: ${S.lastMp4Error}\n\nOpen the console and run clipforgeCheck() for the full report, or use Chrome/Edge on desktop.`,"error");
+ }
  paint(3,"Packing project file…",95);
  finish(`${S.title} · ${clipLen.toFixed(0)}s · ${S.ratio.replace("x",":")} — no MP4 encoder available here. The project file re-opens this clip; for a direct MP4 use Chrome/Edge, or run the render server with ffmpeg + yt-dlp.`,"json");
 }
 async function recordUploadClip(){
- const v=$("videoEl");const dur=S.outPoint-S.inPoint;if(dur<=0)return;
- const W=S.ratio==="9x16"?540:S.ratio==="1x1"?540:960,H=S.ratio==="9x16"?960:S.ratio==="1x1"?540:540;
+ const dur=S.outPoint-S.inPoint;if(dur<=0)return;
+ const W=S.ratio==="9x16"?720:S.ratio==="1x1"?720:1280,H=S.ratio==="9x16"?1280:S.ratio==="1x1"?720:720;
  const cv=document.createElement("canvas");cv.width=W;cv.height=H;const cx=cv.getContext("2d");
  const stream=cv.captureStream(30);
+ const hasVideo=!!(S.isUpload && $("videoEl") && $("videoEl").src);
+ const v=hasVideo?$("videoEl"):null;
+
+ // audio: prefer decoded buffers (works for both sources), else the element graph
  try{
-   const ac=new AudioContext();const dest=ac.createMediaStreamDestination();
-   const vs=ac.createMediaElementSource(v);vs.connect(dest);
-   if(S.song&&audio.src){const ma=ac.createMediaElementSource(audio);const g=ac.createGain();g.gain.value=S.musicVol;ma.connect(g);g.connect(dest)}
-   dest.stream.getAudioTracks().forEach(t=>stream.addTrack(t));
- }catch(e){console.warn("audio graph",e)}
+   const pcm=await MP4.mixAudio({
+     sourceUrl:hasVideo?S.objectUrl:null, inPoint:S.inPoint, duration:dur,
+     musicUrl:(S.song&&S.song.url)||null, origVol:S.origVol, musicVol:S.musicVol,
+     fade:parseFloat($("fadeSlider").value)||1.5});
+   if(pcm){
+     const ac=new AudioContext({sampleRate:48000});
+     const buf=ac.createBuffer(1,pcm.length,48000);
+     buf.copyToChannel(pcm,0);
+     const src=ac.createBufferSource();src.buffer=buf;
+     const dest=ac.createMediaStreamDestination();src.connect(dest);src.start();
+     dest.stream.getAudioTracks().forEach(t=>stream.addTrack(t));
+     window.__wac=ac;
+   }
+ }catch(e){console.warn("webm audio",e)}
+
  const mime=MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")?"video/webm;codecs=vp9,opus":"video/webm";
- const rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:4_000_000});
+ const rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:5_000_000});
  const chunks=[];rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
  const stopped=new Promise(r=>rec.onstop=r);
- v.currentTime=S.inPoint;await v.play();
+
+ if(v){ v.currentTime=S.inPoint; await v.play().catch(()=>{}); }
+ let poster=null;
+ if(!hasVideo && S.thumbUrl){ poster=await new Promise(r=>{const im=new Image();im.crossOrigin="anonymous";
+   im.onload=()=>r(im);im.onerror=()=>r(null);im.src=S.thumbUrl;}); }
  rec.start(200);
  const t0=performance.now();
  await new Promise(res=>{const loop=()=>{
-   const vw=v.videoWidth||16,vh=v.videoHeight||9;
-   const scale=Math.max(W/vw,H/vh),dw=vw*scale,dh=vh*scale;
-   cx.fillStyle="#000";cx.fillRect(0,0,W,H);cx.drawImage(v,(W-dw)/2,(H-dh)/2,dw,dh);
-   if(performance.now()-t0<dur*1000&&v.currentTime<S.outPoint)requestAnimationFrame(loop);else res()};loop()});
- rec.stop();await stopped;v.pause();
+   const t=(performance.now()-t0)/1000;
+   cx.fillStyle="#000";cx.fillRect(0,0,W,H);
+   if(v){
+     const vw=v.videoWidth||16,vh=v.videoHeight||9,sc=Math.max(W/vw,H/vh);
+     cx.drawImage(v,(W-vw*sc)/2,(H-vh*sc)/2,vw*sc,vh*sc);
+   }else if(poster){
+     const z=1.05+0.10*Math.min(1,t/dur),sc=Math.max(W/poster.width,H/poster.height)*z;
+     cx.drawImage(poster,(W-poster.width*sc)/2,(H-poster.height*sc)/2,poster.width*sc,poster.height*sc);
+   }else{
+     const g=cx.createLinearGradient(0,0,W,H);g.addColorStop(0,"#7c5cff");g.addColorStop(.55,"#ff4d8d");g.addColorStop(1,"#07070c");
+     cx.fillStyle=g;cx.fillRect(0,0,W,H);
+   }
+   const txt=(($("captionInput")&&$("captionInput").value)||S.captionText||"").trim();
+   if(txt && $("swCap").classList.contains("on")){
+     const f=Math.round(W/22);cx.font=`800 ${f}px Inter, system-ui, sans-serif`;
+     cx.textAlign="center";cx.textBaseline="middle";
+     const pad=Math.round(f*0.55);const mw=cx.measureText(txt).width;
+     const bw=Math.min(W-pad*2,mw+pad*2),bh=f+pad*2;
+     cx.fillStyle="rgba(0,0,0,0.58)";cx.fillRect((W-bw)/2,H-Math.round(H*0.12)-bh,bw,bh);
+     cx.fillStyle="#fff";cx.fillText(txt,W/2,H-Math.round(H*0.12)-bh/2);
+   }
+   if(t<dur) raf(loop); else res();}; const raf=window.requestAnimationFrame||((f)=>setTimeout(f,16));raf(loop);});
+ rec.stop();await stopped;
+ if(v) v.pause();
+ if(S.song) audio.pause();
  S.exportedBlob=new Blob(chunks,{type:"video/webm"});
- if(S.song){audio.pause()}
 }
 function downloadClip(){
  if(S.exportDownloadUrl){
@@ -3360,7 +3413,55 @@ document.addEventListener("keydown",e=>{
  else if(e.key==="l"||e.key==="L")liveClip();
 });
 
+/* ============ SELF TEST ============ */
+async function selfTest(){
+  const line=(m)=>{ $("expStatus").textContent=m; };
+  $("exportMain").style.display="block";$("exportDone").style.display="none";
+  $("expFill").style.width="5%";$("expPct").textContent="5%";
+  line("Checking encoders…");
+  try{
+    if(!window.VideoEncoder) throw new Error('This browser has no WebCodecs (needs Chrome/Edge 94+)');
+    if(!(window.Mp4Muxer||window.ClipForgeMp4)){ await ensureMuxer(); }
+    if(!(window.Mp4Muxer||window.ClipForgeMp4)) throw new Error('MP4 muxer failed to load');
+    line("Encoding a 1-second test clip…");
+    const res=await MP4.render({
+      video:null,sourceUrl:null,imageSrc:null,inPoint:0,duration:1,aspect:'16x9',
+      captionText:'CLIPFORGE ENCODER OK',captionsOn:true,origVol:0,videoOnly:false,
+      musicUrl:null,musicVol:0,fade:0,onProgress:p=>{
+        $("expFill").style.width=(10+p*80)+"%";$("expPct").textContent=Math.round(10+p*80)+"%";}
+    });
+    S.exportedBlob=res.blob;S.exportDownloadUrl=null;
+    $("exportMain").style.display="none";$("exportDone").style.display="block";
+    $("doneTitle").textContent="Encoder works ✓";
+    $("doneMeta").style.whiteSpace='pre-wrap';
+    $("doneMeta").textContent=`Your browser produced a real MP4 (${res.width}×${res.height}, ${res.videoCodec}${res.audio!=='silent'?' + '+res.audio:''}, ${(res.blob.size/1024).toFixed(0)} KB).\n\nExport from the editor will give you an MP4 too.`;
+    $("downloadBtn").textContent="Download test clip";
+    toast("Encoder test passed — MP4 works here");
+  }catch(e){
+    S.lastMp4Error=(e&&e.message)||String(e);
+    $("exportMain").style.display="none";$("exportDone").style.display="block";
+    $("doneTitle").textContent="Encoder test failed";
+    $("doneMeta").style.whiteSpace='pre-wrap';$("doneMeta").style.textAlign='left';
+    $("doneMeta").textContent=`Reason: ${S.lastMp4Error}\n\nDiagnostics: ${await diagnoseShort()}\n\nTry Chrome or Edge on a desktop.`;
+    $("downloadBtn").textContent="Download project file";
+    S.exportedBlob=null;
+    toast("Encoder test failed — details shown");
+  }
+}
+
 /* ============ DIAGNOSTICS ============ */
+async function diagnoseShort(){
+  const bits=[];
+  bits.push('muxer=' + (!!(window.Mp4Muxer||window.ClipForgeMp4)));
+  bits.push('webcodecs=' + !!(window.VideoEncoder&&window.AudioEncoder));
+  if(window.VideoEncoder){
+    for(const c of ['avc1.640028','vp09.00.10.08','vp8']){
+      try{ const r=await VideoEncoder.isConfigSupported({codec:c,width:1080,height:1920,bitrate:8e6,framerate:30});
+           if(r&&r.supported){bits.push('video='+c);break} }catch(e){}
+    }
+  }
+  return bits.join(' · ');
+}
 const BUILD='2026-11-24-MP4';
 window.clipforgeCheck=async function(){
  const enc={};
