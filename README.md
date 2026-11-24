@@ -54,7 +54,16 @@ the result screen:
 | **Project file** | no encoder at all | a `.json` that re-opens the clip in the editor — the button says so, it is never labelled MP4 |
 
 The navbar pill shows the active engine: `engine online`, `upload render`,
-`browser MP4`, or `no encoder`.
+`browser MP4`, or `no encoder`. The footer shows a `build <date>` stamp — if it
+doesn't match the latest commit, the deploy is stale.
+
+**Troubleshooting:** open the browser console and run `await clipforgeCheck()`.
+It prints the build id, whether the muxer loaded, which encoders the browser has
+(H.264 / VP9 / AAC / Opus), and whether MP4 export is possible.
+
+Codec negotiation order (first supported wins):
+- video: H.264 → VP9 → VP8 (VP9/VP8 are still muxed into a real `.mp4`)
+- audio: AAC → Opus → silent
 
 > **Vercel:** this is a pure static deploy — `index.html` (with the muxer inlined),
 > `music/`, `assets/`. No `vercel.json` is needed or wanted: declaring `builds`

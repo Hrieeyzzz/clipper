@@ -527,7 +527,7 @@ footer{border-top:1px solid var(--line);padding:22px 28px;display:flex;justify-c
 </section>
 
 <footer>
-  <span>ClipForge Pro — clip smarter, post everywhere.</span>
+  <span>ClipForge Pro — clip smarter, post everywhere. <b id="buildStamp" style="color:#7c5cff">build …</b></span>
   <span>Keyboard: <span class="kbd">Space</span> <span class="kbd">I</span> <span class="kbd">O</span> <span class="kbd">L</span></span>
 </footer>
 
@@ -2925,15 +2925,25 @@ const MP4 = (() => {
   }
 
   async function pickConfig(W,H,FPS){
+    // Prefer H.264 (widest playback), but fall back so a browser without it can
+    // still produce an .mp4 instead of a .json.
     const tries=[
-      {codec:'avc1.640028',width:W,height:H,bitrate:8_000_000,framerate:FPS},
-      {codec:'avc1.4d4028',width:W,height:H,bitrate:8_000_000,framerate:FPS},
-      {codec:'avc1.42e033',width:W,height:H,bitrate:6_000_000,framerate:FPS}
+      {codec:'avc1.640028',muxer:'avc',label:'H.264',width:W,height:H,bitrate:8_000_000,framerate:FPS},
+      {codec:'avc1.4d4028',muxer:'avc',label:'H.264',width:W,height:H,bitrate:8_000_000,framerate:FPS},
+      {codec:'avc1.42e033',muxer:'avc',label:'H.264',width:W,height:H,bitrate:6_000_000,framerate:FPS},
+      {codec:'vp09.00.10.08',muxer:'vp9',label:'VP9',width:W,height:H,bitrate:8_000_000,framerate:FPS},
+      {codec:'vp8',muxer:'vp9',label:'VP8',width:W,height:H,bitrate:8_000_000,framerate:FPS}
     ];
-    for(const c of tries){
-      try{const r=await VideoEncoder.isConfigSupported(c);if(r&&r.supported)return c}catch(e){}
+    for(const t of tries){
+      try{
+        const r=await VideoEncoder.isConfigSupported(t);
+        if(r&&r.supported){
+          // keep our own metadata (label/muxer) — the returned config drops it
+          return {...t};
+        }
+      }catch(e){}
     }
-    throw new Error('This browser cannot encode H.264 MP4 — use Chrome or Edge');
+    throw new Error('No video encoder available in this browser');
   }
 
   /** mix original + music offline, returns mono Float32 PCM at 48k */
@@ -3010,6 +3020,7 @@ const MP4 = (() => {
     const H = aspect==='9x16'?1920:aspect==='1x1'?1080:1080;
     const FPS = 30;
     const cfg = await pickConfig(W,H,FPS);
+    const vLabel = cfg.label || (cfg.muxer==='vp9'?'VP9':'H.264');
     const motion = canCapture(video);
 
     // audio first (offline + deterministic)
@@ -3020,7 +3031,7 @@ const MP4 = (() => {
     const lib=muxerLib();
     const muxer=new lib.Muxer({
       target:new lib.ArrayBufferTarget(),
-      video:{codec:'avc',width:W,height:H},
+      video:{codec:cfg.muxer==='vp9'?'vp9':'avc',width:W,height:H},
       ...(useAudio?{audio:{codec:acfg.muxer,sampleRate:acfg.sampleRate,numberOfChannels:acfg.numberOfChannels}}:{}),
       fastStart:'in-memory'
     });
@@ -3134,7 +3145,7 @@ const MP4 = (() => {
     const blob=new Blob([muxer.target.buffer],{type:'video/mp4'});
     return {blob,width:W,height:H,stillOnly:!motion,ext:'mp4',
             audio: useAudio ? (acfg.muxer==='opus'?'Opus':'AAC') : 'silent',
-            videoCodec:'H.264'};
+            videoCodec:vLabel};
   }
 
   return {supported:hasCodecs, ready, canCapture, render, decodeAudio};
@@ -3349,7 +3360,24 @@ document.addEventListener("keydown",e=>{
  else if(e.key==="l"||e.key==="L")liveClip();
 });
 
+/* ============ DIAGNOSTICS ============ */
+const BUILD='2026-11-24-MP4';
+window.clipforgeCheck=async function(){
+ const enc={};
+ enc.h264=await (async()=>{try{return (await VideoEncoder.isConfigSupported({codec:'avc1.640028',width:1080,height:1920,bitrate:8e6,framerate:30})).supported}catch(e){return false}})();
+ enc.vp9 =await (async()=>{try{return (await VideoEncoder.isConfigSupported({codec:'vp09.00.10.08',width:1080,height:1920,bitrate:8e6,framerate:30})).supported}catch(e){return false}})();
+ enc.aac =await (async()=>{try{return (await AudioEncoder.isConfigSupported({codec:'mp4a.40.2',sampleRate:48000,numberOfChannels:1,bitrate:128000})).supported}catch(e){return false}})();
+ enc.opus=await (async()=>{try{return (await AudioEncoder.isConfigSupported({codec:'opus',sampleRate:48000,numberOfChannels:1,bitrate:128000})).supported}catch(e){return false}})();
+ const r={build:BUILD,url:location.href,
+   muxer:!!(window.Mp4Muxer||window.ClipForgeMp4),
+   webcodecs:!!(window.VideoEncoder&&window.AudioEncoder),
+   encoders:enc, canExportMp4:MP4.supported(), pill:$("engineText").textContent};
+ console.log('%c ClipForge check ','background:#7c5cff;color:#fff',r);
+ return r;
+};
+
 /* ============ INIT ============ */
+if($("buildStamp"))$("buildStamp").textContent='build '+BUILD;
 renderSongs();renderClips();updateTimelineUI();
 probeBackend();
 ['load','clipforge-mp4-ready'].forEach(ev=>window.addEventListener(ev,()=>{
